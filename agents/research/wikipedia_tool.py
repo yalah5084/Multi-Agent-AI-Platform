@@ -1,8 +1,15 @@
 import asyncio
 import html
 import re
-
 import httpx
+import json
+
+from uuid import uuid4
+
+if __package__:
+    from .events import create_tool_event
+else:
+    from events import create_tool_event
 
 
 WIKIPEDIA_API_URL = "https://en.wikipedia.org/w/api.php"
@@ -77,16 +84,60 @@ async def search_wikipedia(query: str, limit: int = 3) -> dict:
     }
 
 
+async def run_wikipedia_with_events(
+    query: str,
+    limit: int,
+    run_id: str,
+    task_id: str,
+    events: list,
+) -> dict:
+    tool_call_id = str(uuid4())
+
+    def emit(event_type: str, message: str):
+        event = create_tool_event(
+            run_id=run_id,
+            task_id=task_id,
+            tool_call_id=tool_call_id,
+            event_type=event_type,
+            message=message,
+        )
+        events.append(event)
+        print(f"[{event_type}] {message}", flush=True)
+
+    emit("tool.started", "Searching Wikipedia")
+
+    try:
+        result = await search_wikipedia(query, limit)
+    except asyncio.CancelledError:
+        emit("tool.failed", "Wikipedia search was cancelled")
+        raise
+    except Exception:
+        emit("tool.failed", "Wikipedia search failed")
+        raise
+    else:
+        emit("tool.completed", result["message"])
+        return result
+
+
 if __name__ == "__main__":
     query = input("What would you like to search on Wikipedia? ")
-
+    events = []
+    
     try:
         limit = int(input("How many sources would you like? (1–10): "))
     except ValueError:
         print("Please enter a whole number between 1 and 10.")
     else:
         try:
-            result = asyncio.run(search_wikipedia(query, limit))
+            result = asyncio.run(
+                run_wikipedia_with_events(
+                    query=query,
+                    limit=limit,
+                    run_id="local-run",
+                    task_id="local-task",
+                    events=events,
+                )
+            )
         except ValueError as error:
             print(f"Invalid input: {error}")
         except httpx.TimeoutException:
@@ -112,3 +163,6 @@ if __name__ == "__main__":
                     print(f"{number}. {passage}")
                     print("Source:", source["url"])
                     print()
+
+    print("\nRecorded events:")
+    print(json.dumps(events, indent=2))
